@@ -270,7 +270,7 @@ void setup() {
 
     touchSPI.begin(25, 39, 32, TOUCH_CS);
     touch.begin(touchSPI);
-    touch.setRotation(0);
+    touch.setRotation(2);
 
     if (!SD.begin(SD_CS, sd_spi, SD_SPI_SPEED, "/sd")) {
         Serial.println("SD mount failed!");
