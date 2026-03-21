@@ -24,6 +24,7 @@ jobs:
         run: |
           arduino-cli lib install "GFX Library for Arduino"@1.6.0
           arduino-cli lib install "JPEGDEC"@1.8.2
+          arduino-cli lib install "XPT2046_Touchscreen"
 
       - name: Prepare sketch folder
         run: |
