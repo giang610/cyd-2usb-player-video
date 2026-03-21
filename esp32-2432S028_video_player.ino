@@ -2,7 +2,7 @@
 // Use board "ESP32 Dev Module" (last tested on v3.2.0)
 
 #include <Arduino_GFX_Library.h>
-#include <XPT2046_Touchscreen.h>  // Install "XPT2046_Touchscreen" from Library Manager
+#include <XPT2046_Touchscreen.h>
 #include "MjpegClass.h"
 #include "SD.h"
 
@@ -29,49 +29,63 @@
 
 const char *MJPEG_FOLDER = "/mjpeg";
 
-// --- Menu style (Bruce-like) ---
-#define MENU_BG         0x0000  // Black background
-#define MENU_HEADER_BG  0x0318  // Dark green header (Bruce style)
-#define MENU_ITEM_BG    0x1082  // Dark gray item
-#define MENU_SEL_BG     0x02B0  // Green highlight (selected)
-#define MENU_TEXT       0xFFFF  // White text
-#define MENU_SEL_TEXT   0xFFFF  // White text selected
-#define MENU_DIM_TEXT   0x8410  // Gray text (dim)
-#define ITEM_H          36      // Height of each menu item
-#define HEADER_H        40      // Header height
-#define MENU_PADDING    6       // Padding inside item
+// Colors (Bruce-like)
+#define C_BG        0x0000  // Black
+#define C_HEADER    0x0318  // Dark green
+#define C_UP_ZONE   0x1082  // Dark gray
+#define C_MID_ZONE  0x02B0  // Green (play)
+#define C_DN_ZONE   0x1082  // Dark gray
+#define C_ARROW     0xFFFF  // White
+#define C_TEXT      0xFFFF  // White
+#define C_DIM       0x8410  // Gray
+#define C_ACCENT    0x07E0  // Bright green
+
+// Screen layout (240 wide, 320 tall — portrait)
+// Header: 40px
+// UP zone: 80px
+// MID zone: 120px  ← tên file + PLAY
+// DN zone: 80px
+#define SCR_W       240
+#define SCR_H       320
+#define HEADER_H    40
+#define ZONE_UP_Y   HEADER_H
+#define ZONE_UP_H   80
+#define ZONE_MID_Y  (HEADER_H + ZONE_UP_H)
+#define ZONE_MID_H  120
+#define ZONE_DN_Y   (ZONE_MID_Y + ZONE_MID_H)
+#define ZONE_DN_H   (SCR_H - ZONE_DN_Y)
 
 // File list
 #define MAX_FILES 20
 String   mjpegFileList[MAX_FILES];
 uint32_t mjpegFileSizes[MAX_FILES] = {0};
-int      mjpegCount       = 0;
+int      mjpegCount        = 0;
 int      currentMjpegIndex = 0;
 
 // MJPEG globals
-MjpegClass     mjpeg;
-int            total_frames;
-unsigned long  total_read_video, total_decode_video, total_show_video;
-unsigned long  start_ms, curr_ms;
-long           output_buf_size, estimateBufferSize;
-uint8_t       *mjpeg_buf;
-uint16_t      *output_buf;
+MjpegClass    mjpeg;
+int           total_frames;
+unsigned long total_read_video, total_decode_video, total_show_video;
+unsigned long start_ms, curr_ms;
+long          output_buf_size, estimateBufferSize;
+uint8_t      *mjpeg_buf;
+uint16_t     *output_buf;
 
 // Display
 Arduino_DataBus *bus = new Arduino_HWSPI(2, 15, 14, 13, 12);
 Arduino_GFX     *gfx = new Arduino_ILI9341(bus);
 
-// Touch (CYD 2USB uses separate SPI for touch)
+// Touch
 SPIClass touchSPI(HSPI);
 XPT2046_Touchscreen touch(TOUCH_CS, TOUCH_IRQ);
 
-// SD on VSPI
+// SD
 SPIClass sd_spi(VSPI);
 
-// Skip button
-volatile bool skipRequested = false;
-volatile uint32_t isrTick   = 0;
-uint32_t lastPress           = 0;
+// Skip
+volatile bool    skipRequested = false;
+volatile uint32_t isrTick      = 0;
+uint32_t          lastPress    = 0;
 
 void IRAM_ATTR onButtonPress() {
     skipRequested = true;
@@ -79,156 +93,155 @@ void IRAM_ATTR onButtonPress() {
 }
 
 // -------------------------------------------------------
-// MENU
+// TOUCH HELPER
 // -------------------------------------------------------
-int  menuScrollOffset = 0;   // first visible item index
-int  menuSelected     = 0;   // currently highlighted item
-
-int visibleItems() {
-    return (gfx->height() - HEADER_H) / ITEM_H;
+void getTouchPoint(int &tx, int &ty) {
+    TS_Point p = touch.getPoint();
+    tx = map(p.x, 3800, 200, 0, SCR_W);
+    ty = map(p.y, 3800, 200, 0, SCR_H);
+    tx = constrain(tx, 0, SCR_W - 1);
+    ty = constrain(ty, 0, SCR_H - 1);
 }
 
-void drawMenu() {
-    int W = gfx->width();
-    int H = gfx->height();
-    int vis = visibleItems();
-
-    // Header
-    gfx->fillRect(0, 0, W, HEADER_H, MENU_HEADER_BG);
-    gfx->setTextColor(MENU_TEXT);
+// -------------------------------------------------------
+// DRAW MENU
+// -------------------------------------------------------
+void drawHeader() {
+    gfx->fillRect(0, 0, SCR_W, HEADER_H, C_HEADER);
+    gfx->setTextColor(C_TEXT);
     gfx->setTextSize(2);
     gfx->setCursor(10, 12);
     gfx->print(">> Video Player");
+}
 
-    // Item count top-right
+void drawUpZone(bool pressed = false) {
+    uint16_t bg = pressed ? C_ACCENT : C_UP_ZONE;
+    gfx->fillRect(0, ZONE_UP_Y, SCR_W, ZONE_UP_H, bg);
+    // Left accent bar
+    gfx->fillRect(0, ZONE_UP_Y, 4, ZONE_UP_H, C_ACCENT);
+    // UP arrow (triangle)
+    int cx = SCR_W / 2;
+    int cy = ZONE_UP_Y + ZONE_UP_H / 2;
+    for (int i = 0; i < 20; i++) {
+        gfx->drawFastHLine(cx - i, cy + i - 10, i * 2 + 1, C_ARROW);
+    }
+    gfx->setTextColor(C_DIM);
     gfx->setTextSize(1);
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%d files", mjpegCount);
-    gfx->setCursor(W - 60, 16);
-    gfx->print(buf);
-
-    // Items
-    gfx->fillRect(0, HEADER_H, W, H - HEADER_H, MENU_BG);
-    for (int i = 0; i < vis; i++) {
-        int idx = menuScrollOffset + i;
-        if (idx >= mjpegCount) break;
-
-        int y = HEADER_H + i * ITEM_H;
-        bool sel = (idx == menuSelected);
-
-        // Item background
-        gfx->fillRect(4, y + 2, W - 8, ITEM_H - 4,
-                      sel ? MENU_SEL_BG : MENU_ITEM_BG);
-
-        // Draw left accent bar if selected
-        if (sel) {
-            gfx->fillRect(4, y + 2, 4, ITEM_H - 4, 0x07E0); // bright green bar
-        }
-
-        // File name (truncate if too long)
-        String name = mjpegFileList[idx];
-        if (name.endsWith(".mjpeg")) name = name.substring(0, name.length() - 6);
-        if (name.length() > 22) name = name.substring(0, 21) + "~";
-
-        gfx->setTextColor(sel ? MENU_SEL_TEXT : MENU_TEXT);
-        gfx->setTextSize(1);
-        gfx->setCursor(16, y + MENU_PADDING + 4);
-        gfx->print(name);
-
-        // File size (right aligned, dim color)
-        gfx->setTextColor(MENU_DIM_TEXT);
-        gfx->setCursor(16, y + MENU_PADDING + 16);
-        gfx->print(formatBytes(mjpegFileSizes[idx]));
-    }
-
-    // Scrollbar
-    if (mjpegCount > vis) {
-        int sbH    = H - HEADER_H;
-        int barH   = max(10, sbH * vis / mjpegCount);
-        int barY   = HEADER_H + sbH * menuScrollOffset / mjpegCount;
-        gfx->fillRect(W - 4, HEADER_H, 4, sbH, MENU_ITEM_BG);
-        gfx->fillRect(W - 4, barY, 4, barH, 0x07E0);
-    }
+    gfx->setCursor(cx - 10, cy + 16);
+    gfx->print("PREV");
 }
 
-// Map raw touch coords to screen coords for CYD 2USB (landscape 320x240)
-// Raw values roughly: X 200-3800, Y 200-3800
-void getTouchPoint(int &tx, int &ty) {
-    TS_Point p = touch.getPoint();
-    // Map raw to screen — adjust these if touch is off
-    tx = map(p.x, 3800, 200, 0, gfx->width());
-    ty = map(p.y, 3800, 200, 0, gfx->height());
-    tx = constrain(tx, 0, gfx->width() - 1);
-    ty = constrain(ty, 0, gfx->height() - 1);
+void drawMidZone(bool pressed = false) {
+    uint16_t bg = pressed ? 0x0460 : C_MID_ZONE;
+    gfx->fillRect(0, ZONE_MID_Y, SCR_W, ZONE_MID_H, bg);
+    // Left accent bar
+    gfx->fillRect(0, ZONE_MID_Y, 6, ZONE_MID_H, C_ACCENT);
+
+    // File index indicator
+    char idx[16];
+    snprintf(idx, sizeof(idx), "%d / %d", currentMjpegIndex + 1, mjpegCount);
+    gfx->setTextColor(C_DIM);
+    gfx->setTextSize(1);
+    gfx->setCursor(SCR_W - 50, ZONE_MID_Y + 8);
+    gfx->print(idx);
+
+    // File name (truncate, centered)
+    String name = mjpegFileList[currentMjpegIndex];
+    if (name.endsWith(".mjpeg")) name = name.substring(0, name.length() - 6);
+    if (name.length() > 18) name = name.substring(0, 17) + "~";
+    gfx->setTextColor(C_TEXT);
+    gfx->setTextSize(2);
+    int nameX = max(10, (SCR_W - (int)name.length() * 12) / 2);
+    gfx->setCursor(nameX, ZONE_MID_Y + 20);
+    gfx->print(name);
+
+    // File size
+    gfx->setTextColor(C_DIM);
+    gfx->setTextSize(1);
+    gfx->setCursor(16, ZONE_MID_Y + 46);
+    gfx->print(formatBytes(mjpegFileSizes[currentMjpegIndex]));
+
+    // PLAY button
+    int btnX = SCR_W / 2 - 36;
+    int btnY = ZONE_MID_Y + 68;
+    gfx->fillRoundRect(btnX, btnY, 72, 34, 8, pressed ? 0x0460 : C_ACCENT);
+    gfx->setTextColor(C_BG);
+    gfx->setTextSize(2);
+    gfx->setCursor(btnX + 16, btnY + 9);
+    gfx->print("PLAY");
 }
 
+void drawDnZone(bool pressed = false) {
+    uint16_t bg = pressed ? C_ACCENT : C_DN_ZONE;
+    gfx->fillRect(0, ZONE_DN_Y, SCR_W, ZONE_DN_H, bg);
+    // Left accent bar
+    gfx->fillRect(0, ZONE_DN_Y, 4, ZONE_DN_H, C_ACCENT);
+    // DOWN arrow (triangle)
+    int cx = SCR_W / 2;
+    int cy = ZONE_DN_Y + ZONE_DN_H / 2;
+    for (int i = 0; i < 20; i++) {
+        gfx->drawFastHLine(cx - i, cy - i + 10, i * 2 + 1, C_ARROW);
+    }
+    gfx->setTextColor(C_DIM);
+    gfx->setTextSize(1);
+    gfx->setCursor(cx - 10, cy - 26);
+    gfx->print("NEXT");
+}
+
+void drawMenu() {
+    gfx->fillScreen(C_BG);
+    drawHeader();
+    drawUpZone();
+    drawMidZone();
+    drawDnZone();
+}
+
+// -------------------------------------------------------
+// MENU LOOP
+// -------------------------------------------------------
 void showMenu() {
-    menuSelected     = currentMjpegIndex;
-    menuScrollOffset = 0;
-    int vis = visibleItems();
-    // Scroll so selected is visible
-    if (menuSelected >= vis) menuScrollOffset = menuSelected - vis + 1;
-
-    gfx->fillScreen(MENU_BG);
     drawMenu();
-
-    uint32_t lastTouch   = 0;
-    int      lastTouchY  = -1;
-    bool     dragging    = false;
-    int      dragStartY  = 0;
-    int      dragStartOff = 0;
+    uint32_t lastTouchTime = 0;
 
     while (true) {
         if (touch.tirqTouched() && touch.touched()) {
+            uint32_t now = millis();
+            if (now - lastTouchTime < 300) continue; // debounce
+            lastTouchTime = now;
+
             int tx, ty;
             getTouchPoint(tx, ty);
-            uint32_t now = millis();
 
-            if (now - lastTouch > 80) { // debounce
-                lastTouch = now;
+            if (ty >= ZONE_UP_Y && ty < ZONE_MID_Y) {
+                // UP zone — previous
+                drawUpZone(true);
+                delay(120);
+                currentMjpegIndex--;
+                if (currentMjpegIndex < 0) currentMjpegIndex = mjpegCount - 1;
+                drawUpZone(false);
+                drawMidZone();
 
-                if (!dragging) {
-                    dragging    = true;
-                    dragStartY  = ty;
-                    dragStartOff = menuScrollOffset;
-                }
+            } else if (ty >= ZONE_MID_Y && ty < ZONE_DN_Y) {
+                // MID zone — play
+                drawMidZone(true);
+                delay(150);
+                return; // exit menu → play
 
-                // Drag scroll
-                int delta = (dragStartY - ty) / ITEM_H;
-                int newOff = constrain(dragStartOff + delta, 0, max(0, mjpegCount - vis));
-                if (newOff != menuScrollOffset) {
-                    menuScrollOffset = newOff;
-                    drawMenu();
-                }
-            }
-            lastTouchY = ty;
-        } else {
-            if (dragging) {
-                // Finger lifted — was it a tap (little movement)?
-                int moved = abs(lastTouchY - dragStartY);
-                if (moved < 10 && lastTouchY >= HEADER_H) {
-                    int tappedItem = menuScrollOffset + (lastTouchY - HEADER_H) / ITEM_H;
-                    if (tappedItem >= 0 && tappedItem < mjpegCount) {
-                        if (tappedItem == menuSelected) {
-                            // Double tap same item = play
-                            currentMjpegIndex = menuSelected;
-                            dragging = false;
-                            return; // exit menu → play
-                        } else {
-                            menuSelected = tappedItem;
-                            drawMenu();
-                        }
-                    }
-                }
-                dragging = false;
+            } else if (ty >= ZONE_DN_Y) {
+                // DOWN zone — next
+                drawDnZone(true);
+                delay(120);
+                currentMjpegIndex++;
+                if (currentMjpegIndex >= mjpegCount) currentMjpegIndex = 0;
+                drawDnZone(false);
+                drawMidZone();
             }
         }
 
-        // Boot button = confirm play selected
+        // Boot button also plays
         if (digitalRead(BOOT_PIN) == LOW) {
             delay(50);
             if (digitalRead(BOOT_PIN) == LOW) {
-                currentMjpegIndex = menuSelected;
                 while (digitalRead(BOOT_PIN) == LOW) delay(10);
                 return;
             }
@@ -247,27 +260,23 @@ void setup() {
     pinMode(BL_PIN, OUTPUT);
     digitalWrite(BL_PIN, HIGH);
 
-    // Display
     if (!gfx->begin(DISPLAY_SPI_SPEED)) {
         Serial.println("Display init failed!");
         while (true) {}
     }
     gfx->setRotation(0);
-    gfx->fillScreen(MENU_BG);
+    gfx->fillScreen(C_BG);
     gfx->invertDisplay(true);
 
-    // Touch (HSPI)
-    touchSPI.begin(25, 39, 32, TOUCH_CS); // SCK, MISO, MOSI, CS
+    touchSPI.begin(25, 39, 32, TOUCH_CS);
     touch.begin(touchSPI);
     touch.setRotation(0);
 
-    // SD (VSPI)
     if (!SD.begin(SD_CS, sd_spi, SD_SPI_SPEED, "/sd")) {
         Serial.println("SD mount failed!");
         while (true) {}
     }
 
-    // Buffers
     output_buf_size = gfx->width() * 4 * 2;
     output_buf = (uint16_t *)heap_caps_aligned_alloc(16, output_buf_size * sizeof(uint16_t), MALLOC_CAP_DMA);
     if (!output_buf) { Serial.println("output_buf alloc failed!"); while (true) {} }
@@ -283,11 +292,9 @@ void setup() {
 }
 
 void loop() {
-    // Show menu first
     showMenu();
-    // Play selected
     playSelectedMjpeg(currentMjpegIndex);
-    // After video ends, show menu again
+    // Sau khi video kết thúc hoặc bị dừng → hiện menu lại
 }
 
 // -------------------------------------------------------
@@ -331,7 +338,7 @@ void mjpegPlayFromSDCard(char *mjpegFilename) {
         mjpeg.drawJpg();
         total_decode_video += millis() - curr_ms;
 
-        // Touch during playback = return to menu
+        // Chạm màn hình khi đang phát → quay về menu
         if (touch.tirqTouched() && touch.touched()) {
             skipRequested = true;
         }
