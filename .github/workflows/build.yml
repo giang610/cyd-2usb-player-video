@@ -33,7 +33,7 @@ jobs:
           arduino-cli compile \
             --fqbn esp32:esp32:esp32:CPUFreq=240,FlashMode=qio,FlashFreq=80,FlashSize=4M,PartitionScheme=default,DebugLevel=none,PSRAM=disabled \
             --output-dir ./build \
-            ./sketch/esp32-2432S028_video_player.ino
+            ./esp32-2432S028_video_player.ino
  
       - name: Upload .bin as artifact
         uses: actions/upload-artifact@v4
