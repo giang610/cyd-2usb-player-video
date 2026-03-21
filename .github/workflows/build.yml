@@ -1,0 +1,44 @@
+name: Build ESP32 Binary
+ 
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+ 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+ 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+ 
+      - name: Install ESP32 core
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.2.0
+ 
+      - name: Install libraries
+        run: |
+          arduino-cli lib install "GFX Library for Arduino"@1.6.0
+          arduino-cli lib install "JPEGDEC"@1.8.2
+ 
+      - name: Build sketch
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32:CPUFreq=240,FlashMode=qio,FlashFreq=80,FlashSize=4M,PartitionScheme=default,DebugLevel=none,PSRAM=disabled \
+            --output-dir ./build \
+            ./sketch/esp32-2432S028_video_player.ino
+ 
+      - name: Upload .bin as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-cyd-video-player
+          path: build/*.bin
+          retention-days: 30
+ 
